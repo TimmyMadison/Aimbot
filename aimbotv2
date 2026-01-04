@@ -365,6 +365,15 @@ local function aimAtTarget(targetData)
     return true
 end
 
+local function suicide()
+    if LocalPlayer.Character then
+        local humanoid = LocalPlayer.Character:FindFirstChild("Humanoid")
+        if humanoid and humanoid.Health > 0 then
+            humanoid.Health = 0
+        end
+    end
+end
+
 RunService.RenderStepped:Connect(function(deltaTime)
     if AimBotEnabled and IsAlive then
         local myCharacter = LocalPlayer.Character
@@ -495,6 +504,28 @@ local AimbotStroke = Instance.new("UIStroke")
 AimbotStroke.Color = Color3.fromRGB(100, 100, 200)
 AimbotStroke.Thickness = 2
 AimbotStroke.Parent = AimbotButton
+
+local ResetButton = Instance.new("TextButton")
+ResetButton.Name = "ResetButton"
+ResetButton.Size = UDim2.new(0, 120, 0, 50)
+ResetButton.Position = UDim2.new(0, 20, 0.5, 40)
+ResetButton.BackgroundColor3 = Color3.fromRGB(150, 50, 50)
+ResetButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ResetButton.Font = Enum.Font.GothamBold
+ResetButton.TextSize = 16
+ResetButton.Text = "RESET (SUICIDE)"
+ResetButton.Active = true
+ResetButton.Draggable = true
+ResetButton.Parent = ScreenGui
+
+local ResetCorner = Instance.new("UICorner")
+ResetCorner.CornerRadius = UDim.new(0, 8)
+ResetCorner.Parent = ResetButton
+
+local ResetStroke = Instance.new("UIStroke")
+ResetStroke.Color = Color3.fromRGB(200, 100, 100)
+ResetStroke.Thickness = 2
+ResetStroke.Parent = ResetButton
 
 local SettingsButton = Instance.new("TextButton")
 SettingsButton.Name = "SettingsButton"
@@ -738,6 +769,10 @@ AimbotButton.MouseButton1Click:Connect(function()
         updateAimbotButton()
         updateSettingsPanel()
     end
+end)
+
+ResetButton.MouseButton1Click:Connect(function()
+    suicide()
 end)
 
 SettingsButton.MouseButton1Click:Connect(function()
