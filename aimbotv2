@@ -1,0 +1,844 @@
+-- Mobile AimBot + ESP for Roblox - Works on Players and NPCs
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+local AimBotEnabled = false
+local ESPEnabled = false
+local IsAlive = true
+local TeamCheckEnabled = true
+local IncludeNPCs = true
+local WallCheckEnabled = false
+local LockTargetEnabled = false
+local ESPObjects = {}
+local NPCs = {}
+local NPCTimer = 0
+local SettingsOpen = true
+local LockedTarget = nil
+local LockedTargetIdentifier = nil
+local BreakLockTimer = 0
+
+local function isCharacterAlive(char)
+    if not char then return false end
+    local humanoid = char:FindFirstChild("Humanoid")
+    return humanoid and humanoid.Health > 0
+end
+
+local function isEnemyPlayer(player)
+    if not TeamCheckEnabled then return true end
+    
+    local myTeam = LocalPlayer.Team
+    local targetTeam = player.Team
+    
+    if not myTeam or not targetTeam then
+        return true
+    end
+    
+    return myTeam ~= targetTeam
+end
+
+local function getAllHumanoids()
+    local humanoids = {}
+    
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            if player.Character and isCharacterAlive(player.Character) then
+                local humanoid = player.Character:FindFirstChild("Humanoid")
+                if humanoid then
+                    table.insert(humanoids, {humanoid = humanoid, model = player.Character, isPlayer = true, player = player})
+                end
+            end
+        end
+    end
+    
+    if IncludeNPCs then
+        for npcName, npcData in pairs(NPCs) do
+            if npcData.model and isCharacterAlive(npcData.model) and npcData.humanoid then
+                table.insert(humanoids, {humanoid = npcData.humanoid, model = npcData.model, isPlayer = false, name = npcName})
+            end
+        end
+    end
+    
+    return humanoids
+end
+
+local function findNPCs()
+    local foundNPCs = {}
+    
+    for _, model in ipairs(Workspace:GetDescendants()) do
+        if model:IsA("Model") then
+            local humanoid = model:FindFirstChild("Humanoid")
+            if humanoid then
+                local humanoidRootPart = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head")
+                if humanoidRootPart then
+                    local isPlayerCharacter = false
+                    for _, player in ipairs(Players:GetPlayers()) do
+                        if player.Character == model then
+                            isPlayerCharacter = true
+                            break
+                        end
+                    end
+                    
+                    if not isPlayerCharacter then
+                        local npcName = model.Name
+                        if not foundNPCs[npcName] then
+                            foundNPCs[npcName] = {
+                                humanoid = humanoid,
+                                model = model,
+                                name = npcName
+                            }
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    return foundNPCs
+end
+
+local function updateNPCList()
+    NPCs = findNPCs()
+end
+
+local function canSeeTarget(targetPos, myPos)
+    if not WallCheckEnabled then return true end
+    
+    local direction = (targetPos - myPos).Unit
+    local distance = (targetPos - myPos).Magnitude
+    
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterDescendantsInstances = {LocalPlayer.Character}
+    raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+    
+    local raycastResult = Workspace:Raycast(myPos, direction * distance, raycastParams)
+    
+    if not raycastResult then
+        return true
+    end
+    
+    local hitModel = raycastResult.Instance:FindFirstAncestorOfClass("Model")
+    if hitModel then
+        local hitHumanoid = hitModel:FindFirstChild("Humanoid")
+        if hitHumanoid then
+            return true
+        end
+    end
+    
+    return false
+end
+
+local function getTargetIdentifier(targetData)
+    if targetData.isPlayer then
+        return "Player_" .. targetData.player.Name
+    else
+        return "NPC_" .. targetData.name
+    end
+end
+
+local function getESPColor(targetData)
+    if targetData.isPlayer then
+        local myTeam = LocalPlayer.Team
+        local targetTeam = targetData.player.Team
+        
+        if not myTeam or not targetTeam then
+            return Color3.fromRGB(255, 50, 50)
+        elseif myTeam == targetTeam then
+            return Color3.fromRGB(50, 255, 50)
+        else
+            return Color3.fromRGB(255, 50, 50)
+        end
+    else
+        return Color3.fromRGB(255, 165, 0)
+    end
+end
+
+local function createESP(targetData)
+    local identifier = getTargetIdentifier(targetData)
+    if ESPObjects[identifier] then return end
+    
+    local espData = {}
+    
+    local espHolder = Instance.new("Folder")
+    espHolder.Name = "ESP_" .. identifier
+    espHolder.Parent = Workspace
+    
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "Highlight"
+    highlight.FillTransparency = 0.8
+    highlight.OutlineTransparency = 0
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.Parent = espHolder
+    
+    local billboardGui = Instance.new("BillboardGui")
+    billboardGui.Name = "InfoGui"
+    billboardGui.Size = UDim2.new(0, 200, 0, 100)
+    billboardGui.ExtentsOffset = Vector3.new(0, 3, 0)
+    billboardGui.AlwaysOnTop = true
+    billboardGui.StudsOffset = Vector3.new(0, 6, 0)
+    billboardGui.Parent = espHolder
+    
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Name = "NameLabel"
+    nameLabel.Size = UDim2.new(1, 0, 0.5, 0)
+    nameLabel.Position = UDim2.new(0, 0, 0, 0)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    nameLabel.TextStrokeTransparency = 0
+    nameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    nameLabel.Font = Enum.Font.GothamBold
+    nameLabel.TextSize = 18
+    nameLabel.Parent = billboardGui
+    
+    local infoLabel = Instance.new("TextLabel")
+    infoLabel.Name = "InfoLabel"
+    infoLabel.Size = UDim2.new(1, 0, 0.5, 0)
+    infoLabel.Position = UDim2.new(0, 0, 0.5, 0)
+    infoLabel.BackgroundTransparency = 1
+    infoLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    infoLabel.TextStrokeTransparency = 0
+    infoLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    infoLabel.Font = Enum.Font.Gotham
+    infoLabel.TextSize = 16
+    infoLabel.Parent = billboardGui
+    
+    espData.holder = espHolder
+    espData.highlight = highlight
+    espData.billboardGui = billboardGui
+    espData.nameLabel = nameLabel
+    espData.infoLabel = infoLabel
+    espData.isPlayer = targetData.isPlayer
+    espData.player = targetData.player
+    espData.name = targetData.name
+    
+    ESPObjects[identifier] = espData
+end
+
+local function updateESP(identifier, espData, targetData)
+    if not targetData or not targetData.model or not isCharacterAlive(targetData.model) then
+        if espData.holder then
+            espData.holder.Parent = nil
+        end
+        return
+    end
+    
+    local model = targetData.model
+    local humanoid = targetData.humanoid
+    local humanoidRootPart = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head")
+    
+    if not humanoid or not humanoidRootPart then
+        if espData.holder then
+            espData.holder.Parent = nil
+        end
+        return
+    end
+    
+    espData.holder.Parent = Workspace
+    espData.highlight.Adornee = model
+    
+    local espColor = getESPColor(targetData)
+    
+    if LockTargetEnabled and LockedTargetIdentifier == identifier then
+        espData.highlight.FillColor = Color3.fromRGB(0, 150, 255)
+        espData.highlight.OutlineColor = Color3.fromRGB(0, 150, 255)
+    else
+        espData.highlight.FillColor = espColor
+        espData.highlight.OutlineColor = espColor
+    end
+    
+    local healthPercent = humanoid.Health / humanoid.MaxHealth
+    if healthPercent > 0.5 then
+        espData.highlight.FillColor = Color3.fromRGB(0, 255, 0)
+        espData.highlight.OutlineColor = Color3.fromRGB(0, 255, 0)
+    elseif healthPercent > 0.25 then
+        espData.highlight.FillColor = Color3.fromRGB(255, 255, 0)
+        espData.highlight.OutlineColor = Color3.fromRGB(255, 255, 0)
+    else
+        espData.highlight.FillColor = Color3.fromRGB(255, 0, 0)
+        espData.highlight.OutlineColor = Color3.fromRGB(255, 0, 0)
+    end
+    
+    local displayName = targetData.isPlayer and targetData.player.Name or (targetData.name or "NPC")
+    espData.nameLabel.Text = displayName
+    espData.nameLabel.TextColor3 = espColor
+    
+    local distance = (humanoidRootPart.Position - Camera.CFrame.Position).Magnitude
+    local teamInfo = ""
+    
+    if targetData.isPlayer then
+        local myTeam = LocalPlayer.Team
+        local targetTeam = targetData.player.Team
+        if myTeam and targetTeam then
+            if myTeam == targetTeam then
+                teamInfo = " (Team)"
+            else
+                teamInfo = " (Enemy)"
+            end
+        end
+    else
+        teamInfo = " (NPC)"
+    end
+    
+    espData.infoLabel.Text = math.floor(humanoid.Health) .. "/" .. math.floor(humanoid.MaxHealth) .. " HP" .. teamInfo
+    espData.infoLabel.TextColor3 = espColor
+    
+    espData.billboardGui.Adornee = humanoidRootPart
+end
+
+local function removeESP(identifier)
+    if ESPObjects[identifier] then
+        if ESPObjects[identifier].holder then
+            ESPObjects[identifier].holder:Destroy()
+        end
+        ESPObjects[identifier] = nil
+    end
+end
+
+local function clearAllESP()
+    for identifier, _ in pairs(ESPObjects) do
+        removeESP(identifier)
+    end
+    ESPObjects = {}
+end
+
+local function getNearestTarget()
+    local myCharacter = LocalPlayer.Character
+    if not myCharacter then return nil end
+    
+    local myRoot = myCharacter:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return nil end
+    
+    local nearestTarget = nil
+    local nearestDistance = math.huge
+    local myPosition = myRoot.Position
+    local allHumanoids = getAllHumanoids()
+    local hasValidTarget = false
+    
+    for _, targetData in ipairs(allHumanoids) do
+        if targetData.isPlayer and TeamCheckEnabled then
+            if not isEnemyPlayer(targetData.player) then
+                continue
+            end
+        end
+        
+        local torso = targetData.model:FindFirstChild("Torso") or targetData.model:FindFirstChild("UpperTorso") or targetData.model:FindFirstChild("HumanoidRootPart")
+        if torso then
+            if WallCheckEnabled then
+                if not canSeeTarget(torso.Position, myPosition) then
+                    continue
+                end
+            end
+            
+            local distance = (torso.Position - myPosition).Magnitude
+            if distance < nearestDistance then
+                nearestDistance = distance
+                nearestTarget = targetData
+                hasValidTarget = true
+            end
+        end
+    end
+    
+    if AimBotEnabled and not hasValidTarget then
+        AimBotEnabled = false
+        LockedTarget = nil
+        LockedTargetIdentifier = nil
+        updateAimbotButton()
+    end
+    
+    return nearestTarget, nearestDistance
+end
+
+local function breakLock()
+    LockedTarget = nil
+    LockedTargetIdentifier = nil
+    BreakLockTimer = 0
+end
+
+local function aimAtTarget(targetData)
+    if not targetData or not targetData.model then return false end
+    
+    local torso = targetData.model:FindFirstChild("Torso") or targetData.model:FindFirstChild("UpperTorso") or targetData.model:FindFirstChild("HumanoidRootPart")
+    if not torso then return false end
+    
+    Camera.CFrame = CFrame.new(Camera.CFrame.Position, torso.Position)
+    return true
+end
+
+RunService.RenderStepped:Connect(function(deltaTime)
+    if AimBotEnabled and IsAlive then
+        local myCharacter = LocalPlayer.Character
+        if myCharacter and isCharacterAlive(myCharacter) then
+            local myRoot = myCharacter:FindFirstChild("HumanoidRootPart")
+            
+            if LockTargetEnabled and LockedTarget and LockedTarget.model then
+                if not isCharacterAlive(LockedTarget.model) then
+                    breakLock()
+                else
+                    local torso = LockedTarget.model:FindFirstChild("Torso") or LockedTarget.model:FindFirstChild("UpperTorso") or LockedTarget.model:FindFirstChild("HumanoidRootPart")
+                    if torso and myRoot then
+                        if WallCheckEnabled then
+                            if not canSeeTarget(torso.Position, myRoot.Position) then
+                                BreakLockTimer = BreakLockTimer + deltaTime
+                                if BreakLockTimer > 2 then
+                                    breakLock()
+                                end
+                            else
+                                BreakLockTimer = 0
+                            end
+                        end
+                        aimAtTarget(LockedTarget)
+                    else
+                        breakLock()
+                    end
+                end
+            else
+                local target = getNearestTarget()
+                if target then
+                    if LockTargetEnabled then
+                        LockedTarget = target
+                        LockedTargetIdentifier = getTargetIdentifier(target)
+                    end
+                    aimAtTarget(target)
+                end
+            end
+        else
+            IsAlive = false
+            AimBotEnabled = false
+            breakLock()
+            updateAimbotButton()
+        end
+    end
+    
+    NPCTimer = NPCTimer + deltaTime
+    if NPCTimer >= 1 then
+        updateNPCList()
+        NPCTimer = 0
+    end
+    
+    if ESPEnabled then
+        local allHumanoids = getAllHumanoids()
+        local activeIdentifiers = {}
+        
+        for _, targetData in ipairs(allHumanoids) do
+            local identifier = getTargetIdentifier(targetData)
+            activeIdentifiers[identifier] = true
+            
+            if not ESPObjects[identifier] then
+                createESP(targetData)
+            end
+            
+            if ESPObjects[identifier] then
+                updateESP(identifier, ESPObjects[identifier], targetData)
+            end
+        end
+        
+        for identifier, espData in pairs(ESPObjects) do
+            if not activeIdentifiers[identifier] then
+                if identifier == LockedTargetIdentifier then
+                    breakLock()
+                end
+                removeESP(identifier)
+            end
+        end
+    end
+end)
+
+local function setupCharacter(character)
+    IsAlive = true
+    local humanoid = character:WaitForChild("Humanoid")
+    humanoid.Died:Connect(function()
+        IsAlive = false
+        AimBotEnabled = false
+        breakLock()
+        updateAimbotButton()
+    end)
+end
+
+if LocalPlayer.Character then
+    setupCharacter(LocalPlayer.Character)
+end
+
+LocalPlayer.CharacterAdded:Connect(function(character)
+    IsAlive = true
+    AimBotEnabled = false
+    breakLock()
+    setupCharacter(character)
+    updateAimbotButton()
+end)
+
+updateNPCList()
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "AimBotGUI"
+ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+ScreenGui.ResetOnSpawn = false
+
+local AimbotButton = Instance.new("TextButton")
+AimbotButton.Name = "AimbotButton"
+AimbotButton.Size = UDim2.new(0, 120, 0, 50)
+AimbotButton.Position = UDim2.new(0, 20, 0.5, -25)
+AimbotButton.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+AimbotButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+AimbotButton.Font = Enum.Font.GothamBold
+AimbotButton.TextSize = 16
+AimbotButton.Text = "AIMBOT: OFF"
+AimbotButton.Active = true
+AimbotButton.Draggable = true
+AimbotButton.Parent = ScreenGui
+
+local AimbotCorner = Instance.new("UICorner")
+AimbotCorner.CornerRadius = UDim.new(0, 8)
+AimbotCorner.Parent = AimbotButton
+
+local AimbotStroke = Instance.new("UIStroke")
+AimbotStroke.Color = Color3.fromRGB(100, 100, 200)
+AimbotStroke.Thickness = 2
+AimbotStroke.Parent = AimbotButton
+
+local SettingsButton = Instance.new("TextButton")
+SettingsButton.Name = "SettingsButton"
+SettingsButton.Size = UDim2.new(0, 40, 0, 40)
+SettingsButton.Position = UDim2.new(0, 150, 0.5, -20)
+SettingsButton.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+SettingsButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+SettingsButton.Font = Enum.Font.GothamBold
+SettingsButton.TextSize = 20
+SettingsButton.Text = "⚙"
+SettingsButton.Active = true
+SettingsButton.Draggable = true
+SettingsButton.Parent = ScreenGui
+
+local SettingsCorner = Instance.new("UICorner")
+SettingsCorner.CornerRadius = UDim.new(0, 6)
+SettingsCorner.Parent = SettingsButton
+
+local SettingsStroke = Instance.new("UIStroke")
+SettingsStroke.Color = Color3.fromRGB(100, 100, 200)
+SettingsStroke.Thickness = 2
+SettingsStroke.Parent = SettingsButton
+
+local SettingsPanel = Instance.new("Frame")
+SettingsPanel.Name = "SettingsPanel"
+SettingsPanel.Size = UDim2.new(0, 250, 0, 320)
+SettingsPanel.Position = UDim2.new(0, 20, 0.5, -160)
+SettingsPanel.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+SettingsPanel.BackgroundTransparency = 0.15
+SettingsPanel.Active = true
+SettingsPanel.Draggable = true
+SettingsPanel.Parent = ScreenGui
+SettingsPanel.Visible = SettingsOpen
+
+local PanelCorner = Instance.new("UICorner")
+PanelCorner.CornerRadius = UDim.new(0, 10)
+PanelCorner.Parent = SettingsPanel
+
+local PanelStroke = Instance.new("UIStroke")
+PanelStroke.Color = Color3.fromRGB(100, 100, 200)
+PanelStroke.Thickness = 2
+PanelStroke.Parent = SettingsPanel
+
+local PanelTitle = Instance.new("TextLabel")
+PanelTitle.Name = "PanelTitle"
+PanelTitle.Size = UDim2.new(1, 0, 0, 30)
+PanelTitle.Position = UDim2.new(0, 0, 0, 10)
+PanelTitle.BackgroundTransparency = 1
+PanelTitle.Text = "SETTINGS"
+PanelTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+PanelTitle.Font = Enum.Font.GothamBold
+PanelTitle.TextSize = 16
+PanelTitle.Parent = SettingsPanel
+
+local TeamCheckButton = Instance.new("TextButton")
+TeamCheckButton.Name = "TeamCheckButton"
+TeamCheckButton.Size = UDim2.new(0.85, 0, 0, 32)
+TeamCheckButton.Position = UDim2.new(0.075, 0, 0, 45)
+TeamCheckButton.BackgroundColor3 = Color3.fromRGB(80, 180, 80)
+TeamCheckButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+TeamCheckButton.Font = Enum.Font.GothamBold
+TeamCheckButton.TextSize = 13
+TeamCheckButton.Text = "TEAM CHECK: ON"
+TeamCheckButton.Parent = SettingsPanel
+
+local TeamCheckCorner = Instance.new("UICorner")
+TeamCheckCorner.CornerRadius = UDim.new(0, 6)
+TeamCheckCorner.Parent = TeamCheckButton
+
+local NPCButton = Instance.new("TextButton")
+NPCButton.Name = "NPCButton"
+NPCButton.Size = UDim2.new(0.85, 0, 0, 32)
+NPCButton.Position = UDim2.new(0.075, 0, 0, 85)
+NPCButton.BackgroundColor3 = Color3.fromRGB(80, 180, 80)
+NPCButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+NPCButton.Font = Enum.Font.GothamBold
+NPCButton.TextSize = 13
+NPCButton.Text = "NPCs: ON"
+NPCButton.Parent = SettingsPanel
+
+local NPCButtonCorner = Instance.new("UICorner")
+NPCButtonCorner.CornerRadius = UDim.new(0, 6)
+NPCButtonCorner.Parent = NPCButton
+
+local WallCheckButton = Instance.new("TextButton")
+WallCheckButton.Name = "WallCheckButton"
+WallCheckButton.Size = UDim2.new(0.85, 0, 0, 32)
+WallCheckButton.Position = UDim2.new(0.075, 0, 0, 125)
+WallCheckButton.BackgroundColor3 = Color3.fromRGB(180, 80, 80)
+WallCheckButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+WallCheckButton.Font = Enum.Font.GothamBold
+WallCheckButton.TextSize = 13
+WallCheckButton.Text = "WALL CHECK: OFF"
+WallCheckButton.Parent = SettingsPanel
+
+local WallCheckCorner = Instance.new("UICorner")
+WallCheckCorner.CornerRadius = UDim.new(0, 6)
+WallCheckCorner.Parent = WallCheckButton
+
+local LockTargetButton = Instance.new("TextButton")
+LockTargetButton.Name = "LockTargetButton"
+LockTargetButton.Size = UDim2.new(0.85, 0, 0, 32)
+LockTargetButton.Position = UDim2.new(0.075, 0, 0, 165)
+LockTargetButton.BackgroundColor3 = Color3.fromRGB(180, 80, 80)
+LockTargetButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+LockTargetButton.Font = Enum.Font.GothamBold
+LockTargetButton.TextSize = 13
+LockTargetButton.Text = "LOCK TARGET: OFF"
+LockTargetButton.Parent = SettingsPanel
+
+local LockTargetCorner = Instance.new("UICorner")
+LockTargetCorner.CornerRadius = UDim.new(0, 6)
+LockTargetCorner.Parent = LockTargetButton
+
+local ESPButton = Instance.new("TextButton")
+ESPButton.Name = "ESPButton"
+ESPButton.Size = UDim2.new(0.85, 0, 0, 32)
+ESPButton.Position = UDim2.new(0.075, 0, 0, 205)
+ESPButton.BackgroundColor3 = Color3.fromRGB(180, 80, 80)
+ESPButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ESPButton.Font = Enum.Font.GothamBold
+ESPButton.TextSize = 13
+ESPButton.Text = "ESP: OFF"
+ESPButton.Parent = SettingsPanel
+
+local ESPCorner = Instance.new("UICorner")
+ESPCorner.CornerRadius = UDim.new(0, 6)
+ESPCorner.Parent = ESPButton
+
+local CloseButton = Instance.new("TextButton")
+CloseButton.Name = "CloseButton"
+CloseButton.Size = UDim2.new(0.85, 0, 0, 35)
+CloseButton.Position = UDim2.new(0.075, 0, 0, 245)
+CloseButton.BackgroundColor3 = Color3.fromRGB(80, 100, 180)
+CloseButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+CloseButton.Font = Enum.Font.GothamBold
+CloseButton.TextSize = 14
+CloseButton.Text = "CLOSE SETTINGS"
+CloseButton.Parent = SettingsPanel
+
+local CloseCorner = Instance.new("UICorner")
+CloseCorner.CornerRadius = UDim.new(0, 6)
+CloseCorner.Parent = CloseButton
+
+local PanelStatus = Instance.new("TextLabel")
+PanelStatus.Name = "PanelStatus"
+PanelStatus.Size = UDim2.new(1, 0, 0, 20)
+PanelStatus.Position = UDim2.new(0, 0, 0, 285)
+PanelStatus.BackgroundTransparency = 1
+PanelStatus.Text = "Settings"
+PanelStatus.TextColor3 = Color3.fromRGB(200, 200, 200)
+PanelStatus.Font = Enum.Font.Gotham
+PanelStatus.TextSize = 12
+PanelStatus.Parent = SettingsPanel
+
+function updateAimbotButton()
+    if not IsAlive then
+        AimbotButton.Text = "YOU DIED"
+        AimbotButton.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+    elseif AimBotEnabled then
+        AimbotButton.Text = "AIMBOT: ON"
+        AimbotButton.BackgroundColor3 = Color3.fromRGB(50, 180, 50)
+    else
+        AimbotButton.Text = "AIMBOT: OFF"
+        AimbotButton.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+    end
+end
+
+function updateSettingsPanel()
+    if TeamCheckEnabled then
+        TeamCheckButton.Text = "TEAM CHECK: ON"
+        TeamCheckButton.BackgroundColor3 = Color3.fromRGB(80, 180, 80)
+    else
+        TeamCheckButton.Text = "TEAM CHECK: OFF"
+        TeamCheckButton.BackgroundColor3 = Color3.fromRGB(180, 80, 80)
+    end
+    
+    if IncludeNPCs then
+        NPCButton.Text = "NPCs: ON"
+        NPCButton.BackgroundColor3 = Color3.fromRGB(80, 180, 80)
+    else
+        NPCButton.Text = "NPCs: OFF"
+        NPCButton.BackgroundColor3 = Color3.fromRGB(180, 80, 80)
+    end
+    
+    if WallCheckEnabled then
+        WallCheckButton.Text = "WALL CHECK: ON"
+        WallCheckButton.BackgroundColor3 = Color3.fromRGB(80, 180, 80)
+    else
+        WallCheckButton.Text = "WALL CHECK: OFF"
+        WallCheckButton.BackgroundColor3 = Color3.fromRGB(180, 80, 80)
+    end
+    
+    if LockTargetEnabled then
+        LockTargetButton.Text = "LOCK TARGET: ON"
+        LockTargetButton.BackgroundColor3 = Color3.fromRGB(80, 180, 80)
+    else
+        LockTargetButton.Text = "LOCK TARGET: OFF"
+        LockTargetButton.BackgroundColor3 = Color3.fromRGB(180, 80, 80)
+    end
+    
+    if ESPEnabled then
+        ESPButton.Text = "ESP: ON"
+        ESPButton.BackgroundColor3 = Color3.fromRGB(80, 180, 80)
+    else
+        ESPButton.Text = "ESP: OFF"
+        ESPButton.BackgroundColor3 = Color3.fromRGB(180, 80, 80)
+    end
+    
+    local statusText = "Aiming at: " .. (TeamCheckEnabled and "Enemies" or "All")
+    if WallCheckEnabled then
+        statusText = statusText .. " • Wall Check ON"
+    end
+    if LockTargetEnabled and LockedTarget then
+        local name = LockedTarget.isPlayer and LockedTarget.player.Name or LockedTarget.name
+        statusText = statusText .. " • Locked: " .. name
+    end
+    PanelStatus.Text = statusText
+end
+
+AimbotButton.MouseButton1Click:Connect(function()
+    if IsAlive then
+        AimBotEnabled = not AimBotEnabled
+        if not AimBotEnabled then
+            breakLock()
+        end
+        if AimBotEnabled then
+            local target = getNearestTarget()
+            if not target then
+                AimBotEnabled = false
+                breakLock()
+                if SettingsOpen then
+                    PanelStatus.Text = "No valid targets"
+                    PanelStatus.TextColor3 = Color3.fromRGB(255, 100, 100)
+                end
+            elseif LockTargetEnabled then
+                LockedTarget = target
+                LockedTargetIdentifier = getTargetIdentifier(target)
+            end
+        end
+        updateAimbotButton()
+        updateSettingsPanel()
+    end
+end)
+
+SettingsButton.MouseButton1Click:Connect(function()
+    SettingsOpen = not SettingsOpen
+    SettingsPanel.Visible = SettingsOpen
+    updateSettingsPanel()
+end)
+
+TeamCheckButton.MouseButton1Click:Connect(function()
+    TeamCheckEnabled = not TeamCheckEnabled
+    if ESPEnabled then
+        clearAllESP()
+    end
+    if AimBotEnabled then
+        breakLock()
+        local target = getNearestTarget()
+        if not target then
+            AimBotEnabled = false
+            updateAimbotButton()
+        elseif LockTargetEnabled then
+            LockedTarget = target
+            LockedTargetIdentifier = getTargetIdentifier(target)
+        end
+    end
+    updateSettingsPanel()
+end)
+
+NPCButton.MouseButton1Click:Connect(function()
+    IncludeNPCs = not IncludeNPCs
+    updateNPCList()
+    if ESPEnabled then
+        clearAllESP()
+    end
+    if AimBotEnabled then
+        breakLock()
+        local target = getNearestTarget()
+        if not target then
+            AimBotEnabled = false
+            updateAimbotButton()
+        elseif LockTargetEnabled then
+            LockedTarget = target
+            LockedTargetIdentifier = getTargetIdentifier(target)
+        end
+    end
+    updateSettingsPanel()
+end)
+
+WallCheckButton.MouseButton1Click:Connect(function()
+    WallCheckEnabled = not WallCheckEnabled
+    if AimBotEnabled then
+        breakLock()
+        local target = getNearestTarget()
+        if not target then
+            AimBotEnabled = false
+            updateAimbotButton()
+        elseif LockTargetEnabled then
+            LockedTarget = target
+            LockedTargetIdentifier = getTargetIdentifier(target)
+        end
+    end
+    updateSettingsPanel()
+end)
+
+LockTargetButton.MouseButton1Click:Connect(function()
+    LockTargetEnabled = not LockTargetEnabled
+    if not LockTargetEnabled then
+        breakLock()
+    elseif AimBotEnabled then
+        local target = getNearestTarget()
+        if target then
+            LockedTarget = target
+            LockedTargetIdentifier = getTargetIdentifier(target)
+        end
+    end
+    updateSettingsPanel()
+end)
+
+ESPButton.MouseButton1Click:Connect(function()
+    ESPEnabled = not ESPEnabled
+    
+    if not ESPEnabled then
+        clearAllESP()
+    end
+    
+    updateSettingsPanel()
+end)
+
+CloseButton.MouseButton1Click:Connect(function()
+    SettingsOpen = false
+    SettingsPanel.Visible = false
+end)
+
+LocalPlayer.CharacterAdded:Connect(function(character)
+    IsAlive = true
+    AimBotEnabled = false
+    breakLock()
+    setupCharacter(character)
+    updateAimbotButton()
+    updateSettingsPanel()
+end)
+
+updateAimbotButton()
+updateSettingsPanel()
+ScreenGui.DisplayOrder = 999
