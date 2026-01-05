@@ -10,14 +10,16 @@ local IsAlive = true
 local TeamCheckEnabled = true
 local IncludeNPCs = true
 local WallCheckEnabled = false
+local LockTargetEnabled = false
 local ESPObjects = {}
 local NPCs = {}
 local NPCTimer = 0
 local SettingsOpen = true
-local LastVisibleTarget = nil
+local LockedTarget = nil
+local LockedTargetIdentifier = nil
 local AimingPaused = false
 local PauseTimer = 0
-local PauseCooldown = 0.5  -- Half second before resuming after target loss
+local PauseCooldown = 1.0  -- 1 second before switching targets
 
 local function isCharacterAlive(char)
     if not char then return false end
@@ -239,16 +241,22 @@ local function updateESP(identifier, espData, targetData)
     
     local espColor = getESPColor(targetData)
     
-    local healthPercent = humanoid.Health / humanoid.MaxHealth
-    if healthPercent > 0.5 then
-        espData.highlight.FillColor = Color3.fromRGB(0, 255, 0)
-        espData.highlight.OutlineColor = Color3.fromRGB(0, 255, 0)
-    elseif healthPercent > 0.25 then
-        espData.highlight.FillColor = Color3.fromRGB(255, 255, 0)
-        espData.highlight.OutlineColor = Color3.fromRGB(255, 255, 0)
+    -- Highlight locked target with special color
+    if LockedTargetIdentifier == identifier then
+        espData.highlight.FillColor = Color3.fromRGB(0, 150, 255)
+        espData.highlight.OutlineColor = Color3.fromRGB(0, 150, 255)
     else
-        espData.highlight.FillColor = Color3.fromRGB(255, 0, 0)
-        espData.highlight.OutlineColor = Color3.fromRGB(255, 0, 0)
+        local healthPercent = humanoid.Health / humanoid.MaxHealth
+        if healthPercent > 0.5 then
+            espData.highlight.FillColor = Color3.fromRGB(0, 255, 0)
+            espData.highlight.OutlineColor = Color3.fromRGB(0, 255, 0)
+        elseif healthPercent > 0.25 then
+            espData.highlight.FillColor = Color3.fromRGB(255, 255, 0)
+            espData.highlight.OutlineColor = Color3.fromRGB(255, 255, 0)
+        else
+            espData.highlight.FillColor = Color3.fromRGB(255, 0, 0)
+            espData.highlight.OutlineColor = Color3.fromRGB(255, 0, 0)
+        end
     end
     
     local displayName = targetData.isPlayer and targetData.player.Name or (targetData.name or "NPC")
@@ -294,6 +302,13 @@ local function clearAllESP()
     ESPObjects = {}
 end
 
+local function breakLock()
+    LockedTarget = nil
+    LockedTargetIdentifier = nil
+    AimingPaused = false
+    PauseTimer = 0
+end
+
 local function getNearestTarget()
     local myCharacter = LocalPlayer.Character
     if not myCharacter then return nil end
@@ -334,6 +349,39 @@ local function getNearestTarget()
     return nearestTarget, nearestDistance, hasValidTarget
 end
 
+local function getVisibleTargets()
+    local myCharacter = LocalPlayer.Character
+    if not myCharacter then return {} end
+    
+    local myRoot = myCharacter:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return {} end
+    
+    local visibleTargets = {}
+    local myPosition = myRoot.Position
+    local allHumanoids = getAllHumanoids()
+    
+    for _, targetData in ipairs(allHumanoids) do
+        if targetData.isPlayer and TeamCheckEnabled then
+            if not isEnemyPlayer(targetData.player) then
+                continue
+            end
+        end
+        
+        local torso = targetData.model:FindFirstChild("Torso") or targetData.model:FindFirstChild("UpperTorso") or targetData.model:FindFirstChild("HumanoidRootPart")
+        if torso then
+            if WallCheckEnabled then
+                if canSeeTarget(torso.Position, myPosition) then
+                    table.insert(visibleTargets, targetData)
+                end
+            else
+                table.insert(visibleTargets, targetData)
+            end
+        end
+    end
+    
+    return visibleTargets
+end
+
 local function aimAtTarget(targetData)
     if not targetData or not targetData.model then return false end
     
@@ -357,34 +405,101 @@ RunService.RenderStepped:Connect(function(deltaTime)
     if AimBotEnabled and IsAlive then
         local myCharacter = LocalPlayer.Character
         if myCharacter and isCharacterAlive(myCharacter) then
-            local target, distance, hasValidTarget = getNearestTarget()
+            local myRoot = myCharacter:FindFirstChild("HumanoidRootPart")
             
-            if target then
-                -- Reset pause if we have a target
-                AimingPaused = false
-                PauseTimer = 0
-                LastVisibleTarget = target
-                aimAtTarget(target)
-            else
-                -- No visible target
-                if WallCheckEnabled then
-                    AimingPaused = true
-                    PauseTimer = PauseTimer + deltaTime
-                    
-                    -- Check if we should resume (cooldown passed)
-                    if PauseTimer >= PauseCooldown then
-                        -- Try to find any target again
-                        local newTarget = getNearestTarget()
-                        if newTarget then
+            if LockTargetEnabled and LockedTarget and LockedTarget.model then
+                -- Check if locked target is still valid
+                if not isCharacterAlive(LockedTarget.model) then
+                    breakLock()
+                    -- Try to find new target immediately
+                    local newTarget = getNearestTarget()
+                    if newTarget then
+                        LockedTarget = newTarget
+                        LockedTargetIdentifier = getTargetIdentifier(newTarget)
+                        aimAtTarget(newTarget)
+                    end
+                else
+                    -- Check if we can see locked target
+                    local torso = LockedTarget.model:FindFirstChild("Torso") or LockedTarget.model:FindFirstChild("UpperTorso") or LockedTarget.model:FindFirstChild("HumanoidRootPart")
+                    if torso and myRoot then
+                        if WallCheckEnabled then
+                            if canSeeTarget(torso.Position, myRoot.Position) then
+                                -- Can see locked target, keep aiming
+                                AimingPaused = false
+                                PauseTimer = 0
+                                aimAtTarget(LockedTarget)
+                            else
+                                -- Can't see locked target, start timer to switch
+                                AimingPaused = true
+                                PauseTimer = PauseTimer + deltaTime
+                                
+                                if PauseTimer >= PauseCooldown then
+                                    -- Time to switch to new target
+                                    local visibleTargets = getVisibleTargets()
+                                    if #visibleTargets > 0 then
+                                        -- Find closest visible target
+                                        local newTarget = nil
+                                        local closestDistance = math.huge
+                                        local myPosition = myRoot.Position
+                                        
+                                        for _, target in ipairs(visibleTargets) do
+                                            local targetTorso = target.model:FindFirstChild("Torso") or target.model:FindFirstChild("UpperTorso") or target.model:FindFirstChild("HumanoidRootPart")
+                                            if targetTorso then
+                                                local distance = (targetTorso.Position - myPosition).Magnitude
+                                                if distance < closestDistance then
+                                                    closestDistance = distance
+                                                    newTarget = target
+                                                end
+                                            end
+                                        end
+                                        
+                                        if newTarget then
+                                            LockedTarget = newTarget
+                                            LockedTargetIdentifier = getTargetIdentifier(newTarget)
+                                            AimingPaused = false
+                                            PauseTimer = 0
+                                            aimAtTarget(newTarget)
+                                        else
+                                            AimingPaused = true
+                                        end
+                                    else
+                                        AimingPaused = true
+                                    end
+                                end
+                            end
+                        else
+                            -- Wall check off, keep aiming at locked target
+                            aimAtTarget(LockedTarget)
                             AimingPaused = false
                             PauseTimer = 0
-                            LastVisibleTarget = newTarget
+                        end
+                    else
+                        -- Lost target body parts, break lock
+                        breakLock()
+                        local newTarget = getNearestTarget()
+                        if newTarget then
+                            LockedTarget = newTarget
+                            LockedTargetIdentifier = getTargetIdentifier(newTarget)
                             aimAtTarget(newTarget)
                         end
                     end
-                else
-                    -- Wall check disabled, so we shouldn't pause
+                end
+            else
+                -- No target locked or lock disabled
+                local target, distance, hasValidTarget = getNearestTarget()
+                
+                if target then
                     AimingPaused = false
+                    PauseTimer = 0
+                    
+                    if LockTargetEnabled then
+                        LockedTarget = target
+                        LockedTargetIdentifier = getTargetIdentifier(target)
+                    end
+                    
+                    aimAtTarget(target)
+                else
+                    AimingPaused = true
                     PauseTimer = 0
                 end
             end
@@ -392,8 +507,7 @@ RunService.RenderStepped:Connect(function(deltaTime)
             IsAlive = false
             AimBotEnabled = false
             AimingPaused = false
-            PauseTimer = 0
-            LastVisibleTarget = nil
+            breakLock()
             updateAimbotButton()
         end
     else
@@ -426,6 +540,9 @@ RunService.RenderStepped:Connect(function(deltaTime)
         
         for identifier, espData in pairs(ESPObjects) do
             if not activeIdentifiers[identifier] then
+                if identifier == LockedTargetIdentifier then
+                    breakLock()
+                end
                 removeESP(identifier)
             end
         end
@@ -439,8 +556,7 @@ local function setupCharacter(character)
         IsAlive = false
         AimBotEnabled = false
         AimingPaused = false
-        PauseTimer = 0
-        LastVisibleTarget = nil
+        breakLock()
         updateAimbotButton()
     end)
 end
@@ -453,8 +569,7 @@ LocalPlayer.CharacterAdded:Connect(function(character)
     IsAlive = true
     AimBotEnabled = false
     AimingPaused = false
-    PauseTimer = 0
-    LastVisibleTarget = nil
+    breakLock()
     setupCharacter(character)
     updateAimbotButton()
 end)
@@ -534,8 +649,8 @@ SettingsStroke.Parent = SettingsButton
 
 local SettingsPanel = Instance.new("Frame")
 SettingsPanel.Name = "SettingsPanel"
-SettingsPanel.Size = UDim2.new(0, 250, 0, 250)
-SettingsPanel.Position = UDim2.new(0, 20, 0.5, -125)
+SettingsPanel.Size = UDim2.new(0, 250, 0, 280)
+SettingsPanel.Position = UDim2.new(0, 20, 0.5, -140)
 SettingsPanel.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
 SettingsPanel.BackgroundTransparency = 0.15
 SettingsPanel.Active = true
@@ -608,10 +723,25 @@ local WallCheckCorner = Instance.new("UICorner")
 WallCheckCorner.CornerRadius = UDim.new(0, 6)
 WallCheckCorner.Parent = WallCheckButton
 
+local LockTargetButton = Instance.new("TextButton")
+LockTargetButton.Name = "LockTargetButton"
+LockTargetButton.Size = UDim2.new(0.85, 0, 0, 32)
+LockTargetButton.Position = UDim2.new(0.075, 0, 0, 165)
+LockTargetButton.BackgroundColor3 = Color3.fromRGB(180, 80, 80)
+LockTargetButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+LockTargetButton.Font = Enum.Font.GothamBold
+LockTargetButton.TextSize = 13
+LockTargetButton.Text = "LOCK TARGET: OFF"
+LockTargetButton.Parent = SettingsPanel
+
+local LockTargetCorner = Instance.new("UICorner")
+LockTargetCorner.CornerRadius = UDim.new(0, 6)
+LockTargetCorner.Parent = LockTargetButton
+
 local ESPButton = Instance.new("TextButton")
 ESPButton.Name = "ESPButton"
 ESPButton.Size = UDim2.new(0.85, 0, 0, 32)
-ESPButton.Position = UDim2.new(0.075, 0, 0, 165)
+ESPButton.Position = UDim2.new(0.075, 0, 0, 205)
 ESPButton.BackgroundColor3 = Color3.fromRGB(180, 80, 80)
 ESPButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 ESPButton.Font = Enum.Font.GothamBold
@@ -626,7 +756,7 @@ ESPCorner.Parent = ESPButton
 local CloseButton = Instance.new("TextButton")
 CloseButton.Name = "CloseButton"
 CloseButton.Size = UDim2.new(0.85, 0, 0, 35)
-CloseButton.Position = UDim2.new(0.075, 0, 0, 205)
+CloseButton.Position = UDim2.new(0.075, 0, 0, 245)
 CloseButton.BackgroundColor3 = Color3.fromRGB(80, 100, 180)
 CloseButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 CloseButton.Font = Enum.Font.GothamBold
@@ -643,7 +773,7 @@ function updateAimbotButton()
         AimbotButton.Text = "YOU DIED"
         AimbotButton.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
     elseif AimBotEnabled then
-        if AimingPaused and WallCheckEnabled then
+        if AimingPaused then
             AimbotButton.Text = "AIMBOT: PAUSED"
             AimbotButton.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
         else
@@ -681,6 +811,14 @@ function updateSettingsPanel()
         WallCheckButton.BackgroundColor3 = Color3.fromRGB(180, 80, 80)
     end
     
+    if LockTargetEnabled then
+        LockTargetButton.Text = "LOCK TARGET: ON"
+        LockTargetButton.BackgroundColor3 = Color3.fromRGB(80, 180, 80)
+    else
+        LockTargetButton.Text = "LOCK TARGET: OFF"
+        LockTargetButton.BackgroundColor3 = Color3.fromRGB(180, 80, 80)
+    end
+    
     if ESPEnabled then
         ESPButton.Text = "ESP: ON"
         ESPButton.BackgroundColor3 = Color3.fromRGB(80, 180, 80)
@@ -696,18 +834,21 @@ AimbotButton.MouseButton1Click:Connect(function()
         AimingPaused = false
         PauseTimer = 0
         
+        if not AimBotEnabled then
+            breakLock()
+        end
+        
         if AimBotEnabled then
             local target = getNearestTarget()
             if not target then
-                if WallCheckEnabled then
-                    AimingPaused = true
-                else
-                    AimBotEnabled = false
-                end
-            else
-                LastVisibleTarget = target
+                AimBotEnabled = false
+                breakLock()
+            elseif LockTargetEnabled then
+                LockedTarget = target
+                LockedTargetIdentifier = getTargetIdentifier(target)
             end
         end
+        
         updateAimbotButton()
         updateSettingsPanel()
     end
@@ -727,7 +868,7 @@ TeamCheckButton.MouseButton1Click:Connect(function()
     TeamCheckEnabled = not TeamCheckEnabled
     AimingPaused = false
     PauseTimer = 0
-    LastVisibleTarget = nil
+    breakLock()
     
     if ESPEnabled then
         clearAllESP()
@@ -736,14 +877,11 @@ TeamCheckButton.MouseButton1Click:Connect(function()
     if AimBotEnabled then
         local target = getNearestTarget()
         if not target then
-            if WallCheckEnabled then
-                AimingPaused = true
-            else
-                AimBotEnabled = false
-                updateAimbotButton()
-            end
-        else
-            LastVisibleTarget = target
+            AimBotEnabled = false
+            updateAimbotButton()
+        elseif LockTargetEnabled then
+            LockedTarget = target
+            LockedTargetIdentifier = getTargetIdentifier(target)
         end
     end
     
@@ -754,7 +892,7 @@ NPCButton.MouseButton1Click:Connect(function()
     IncludeNPCs = not IncludeNPCs
     AimingPaused = false
     PauseTimer = 0
-    LastVisibleTarget = nil
+    breakLock()
     updateNPCList()
     
     if ESPEnabled then
@@ -764,14 +902,11 @@ NPCButton.MouseButton1Click:Connect(function()
     if AimBotEnabled then
         local target = getNearestTarget()
         if not target then
-            if WallCheckEnabled then
-                AimingPaused = true
-            else
-                AimBotEnabled = false
-                updateAimbotButton()
-            end
-        else
-            LastVisibleTarget = target
+            AimBotEnabled = false
+            updateAimbotButton()
+        elseif LockTargetEnabled then
+            LockedTarget = target
+            LockedTargetIdentifier = getTargetIdentifier(target)
         end
     end
     
@@ -780,25 +915,41 @@ end)
 
 WallCheckButton.MouseButton1Click:Connect(function()
     WallCheckEnabled = not WallCheckEnabled
+    AimingPaused = false
+    PauseTimer = 0
     
-    if WallCheckEnabled and AimBotEnabled then
-        -- Check if we should pause now
-        local target = getNearestTarget()
-        if not target then
-            AimingPaused = true
-            PauseTimer = 0
-        else
-            AimingPaused = false
-            PauseTimer = 0
-            LastVisibleTarget = target
+    if WallCheckEnabled and LockTargetEnabled and LockedTarget then
+        -- Check if we can see the locked target with wall check on
+        local myCharacter = LocalPlayer.Character
+        if myCharacter then
+            local myRoot = myCharacter:FindFirstChild("HumanoidRootPart")
+            local torso = LockedTarget.model:FindFirstChild("Torso") or LockedTarget.model:FindFirstChild("UpperTorso") or LockedTarget.model:FindFirstChild("HumanoidRootPart")
+            if myRoot and torso then
+                if not canSeeTarget(torso.Position, myRoot.Position) then
+                    AimingPaused = true
+                end
+            end
         end
-    elseif not WallCheckEnabled then
-        AimingPaused = false
-        PauseTimer = 0
     end
     
     updateSettingsPanel()
     updateAimbotButton()
+end)
+
+LockTargetButton.MouseButton1Click:Connect(function()
+    LockTargetEnabled = not LockTargetEnabled
+    
+    if not LockTargetEnabled then
+        breakLock()
+    elseif AimBotEnabled then
+        local target = getNearestTarget()
+        if target then
+            LockedTarget = target
+            LockedTargetIdentifier = getTargetIdentifier(target)
+        end
+    end
+    
+    updateSettingsPanel()
 end)
 
 ESPButton.MouseButton1Click:Connect(function()
@@ -821,7 +972,7 @@ LocalPlayer.CharacterAdded:Connect(function(character)
     AimBotEnabled = false
     AimingPaused = false
     PauseTimer = 0
-    LastVisibleTarget = nil
+    breakLock()
     setupCharacter(character)
     updateAimbotButton()
     updateSettingsPanel()
