@@ -14,12 +14,13 @@ local LockTargetEnabled = false
 local ESPObjects = {}
 local NPCs = {}
 local NPCTimer = 0
+local NPCRefreshRate = 0.5
 local SettingsOpen = true
 local LockedTarget = nil
 local LockedTargetIdentifier = nil
 local AimingPaused = false
 local PauseTimer = 0
-local PauseCooldown = 1.0  -- 1 second before switching targets
+local PauseCooldown = 1.0
 
 local function isCharacterAlive(char)
     if not char then return false end
@@ -28,16 +29,20 @@ local function isCharacterAlive(char)
 end
 
 local function isEnemyPlayer(player)
-    if not TeamCheckEnabled then return true end
+    if not TeamCheckEnabled then return false end
     
-    local myTeam = LocalPlayer.Team
-    local targetTeam = player.Team
+    local myTeam = LocalPlayer:FindFirstChild("Team")
+    local targetTeam = player:FindFirstChild("Team")
     
     if not myTeam or not targetTeam then
-        return true
+        return false
     end
     
-    return myTeam ~= targetTeam
+    if not myTeam.Value or not targetTeam.Value then
+        return false
+    end
+    
+    return myTeam.Value ~= targetTeam.Value
 end
 
 local function getAllHumanoids()
@@ -48,7 +53,8 @@ local function getAllHumanoids()
             if player.Character and isCharacterAlive(player.Character) then
                 local humanoid = player.Character:FindFirstChild("Humanoid")
                 if humanoid then
-                    table.insert(humanoids, {humanoid = humanoid, model = player.Character, isPlayer = true, player = player})
+                    local isEnemy = isEnemyPlayer(player)
+                    table.insert(humanoids, {humanoid = humanoid, model = player.Character, isPlayer = true, player = player, isEnemy = isEnemy})
                 end
             end
         end
@@ -57,7 +63,7 @@ local function getAllHumanoids()
     if IncludeNPCs then
         for npcName, npcData in pairs(NPCs) do
             if npcData.model and isCharacterAlive(npcData.model) and npcData.humanoid then
-                table.insert(humanoids, {humanoid = npcData.humanoid, model = npcData.model, isPlayer = false, name = npcName})
+                table.insert(humanoids, {humanoid = npcData.humanoid, model = npcData.model, isPlayer = false, name = npcName, isEnemy = true})
             end
         end
     end
@@ -67,28 +73,27 @@ end
 
 local function findNPCs()
     local foundNPCs = {}
+    local playerCharacters = {}
+    
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player.Character then
+            playerCharacters[player.Character] = true
+        end
+    end
     
     for _, model in ipairs(Workspace:GetDescendants()) do
         if model:IsA("Model") then
             local humanoid = model:FindFirstChild("Humanoid")
-            if humanoid then
-                local humanoidRootPart = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head")
-                if humanoidRootPart then
-                    local isPlayerCharacter = false
-                    for _, player in ipairs(Players:GetPlayers()) do
-                        if player.Character == model then
-                            isPlayerCharacter = true
-                            break
-                        end
-                    end
-                    
-                    if not isPlayerCharacter then
-                        local npcName = model.Name
-                        if not foundNPCs[npcName] then
-                            foundNPCs[npcName] = {
+            if humanoid and isCharacterAlive(model) then
+                if not playerCharacters[model] then
+                    local humanoidRootPart = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head")
+                    if humanoidRootPart then
+                        local key = tostring(model)
+                        if not foundNPCs[key] then
+                            foundNPCs[key] = {
                                 humanoid = humanoid,
                                 model = model,
-                                name = npcName
+                                name = model.Name
                             }
                         end
                     end
@@ -141,12 +146,21 @@ end
 
 local function getESPColor(targetData)
     if targetData.isPlayer then
-        local myTeam = LocalPlayer.Team
-        local targetTeam = targetData.player.Team
+        local myTeam = LocalPlayer:FindFirstChild("Team")
+        local targetTeam = targetData.player:FindFirstChild("Team")
         
-        if not myTeam or not targetTeam then
-            return Color3.fromRGB(255, 50, 50)
-        elseif myTeam == targetTeam then
+        if not TeamCheckEnabled or not myTeam or not targetTeam then
+            return Color3.fromRGB(50, 255, 50)
+        end
+        
+        local myTeamValue = myTeam.Value
+        local targetTeamValue = targetTeam.Value
+        
+        if not myTeamValue or not targetTeamValue then
+            return Color3.fromRGB(50, 255, 50)
+        end
+        
+        if myTeamValue == targetTeamValue then
             return Color3.fromRGB(50, 255, 50)
         else
             return Color3.fromRGB(255, 50, 50)
@@ -180,7 +194,7 @@ local function createESP(targetData)
     billboardGui.AlwaysOnTop = true
     billboardGui.StudsOffset = Vector3.new(0, 6, 0)
     billboardGui.Parent = espHolder
-    
+
     local nameLabel = Instance.new("TextLabel")
     nameLabel.Name = "NameLabel"
     nameLabel.Size = UDim2.new(1, 0, 0.5, 0)
@@ -241,7 +255,6 @@ local function updateESP(identifier, espData, targetData)
     
     local espColor = getESPColor(targetData)
     
-    -- Highlight locked target with special color
     if LockedTargetIdentifier == identifier then
         espData.highlight.FillColor = Color3.fromRGB(0, 150, 255)
         espData.highlight.OutlineColor = Color3.fromRGB(0, 150, 255)
@@ -267,13 +280,17 @@ local function updateESP(identifier, espData, targetData)
     local teamInfo = ""
     
     if targetData.isPlayer then
-        local myTeam = LocalPlayer.Team
-        local targetTeam = targetData.player.Team
-        if myTeam and targetTeam then
-            if myTeam == targetTeam then
-                teamInfo = " (Team)"
-            else
-                teamInfo = " (Enemy)"
+        local myTeam = LocalPlayer:FindFirstChild("Team")
+        local targetTeam = targetData.player:FindFirstChild("Team")
+        if TeamCheckEnabled and myTeam and targetTeam then
+            local myTeamValue = myTeam.Value
+            local targetTeamValue = targetTeam.Value
+            if myTeamValue and targetTeamValue then
+                if myTeamValue == targetTeamValue then
+                    teamInfo = " (Team)"
+                else
+                    teamInfo = " (Enemy)"
+                end
             end
         end
     else
@@ -320,13 +337,10 @@ local function getNearestTarget()
     local nearestDistance = math.huge
     local myPosition = myRoot.Position
     local allHumanoids = getAllHumanoids()
-    local hasValidTarget = false
     
     for _, targetData in ipairs(allHumanoids) do
-        if targetData.isPlayer and TeamCheckEnabled then
-            if not isEnemyPlayer(targetData.player) then
-                continue
-            end
+        if not targetData.isEnemy then
+            continue
         end
         
         local torso = targetData.model:FindFirstChild("Torso") or targetData.model:FindFirstChild("UpperTorso") or targetData.model:FindFirstChild("HumanoidRootPart")
@@ -341,12 +355,11 @@ local function getNearestTarget()
             if distance < nearestDistance then
                 nearestDistance = distance
                 nearestTarget = targetData
-                hasValidTarget = true
             end
         end
     end
     
-    return nearestTarget, nearestDistance, hasValidTarget
+    return nearestTarget
 end
 
 local function getVisibleTargets()
@@ -361,10 +374,8 @@ local function getVisibleTargets()
     local allHumanoids = getAllHumanoids()
     
     for _, targetData in ipairs(allHumanoids) do
-        if targetData.isPlayer and TeamCheckEnabled then
-            if not isEnemyPlayer(targetData.player) then
-                continue
-            end
+        if not targetData.isEnemy then
+            continue
         end
         
         local torso = targetData.model:FindFirstChild("Torso") or targetData.model:FindFirstChild("UpperTorso") or targetData.model:FindFirstChild("HumanoidRootPart")
@@ -408,10 +419,8 @@ RunService.RenderStepped:Connect(function(deltaTime)
             local myRoot = myCharacter:FindFirstChild("HumanoidRootPart")
             
             if LockTargetEnabled and LockedTarget and LockedTarget.model then
-                -- Check if locked target is still valid
                 if not isCharacterAlive(LockedTarget.model) then
                     breakLock()
-                    -- Try to find new target immediately
                     local newTarget = getNearestTarget()
                     if newTarget then
                         LockedTarget = newTarget
@@ -419,25 +428,20 @@ RunService.RenderStepped:Connect(function(deltaTime)
                         aimAtTarget(newTarget)
                     end
                 else
-                    -- Check if we can see locked target
                     local torso = LockedTarget.model:FindFirstChild("Torso") or LockedTarget.model:FindFirstChild("UpperTorso") or LockedTarget.model:FindFirstChild("HumanoidRootPart")
                     if torso and myRoot then
                         if WallCheckEnabled then
                             if canSeeTarget(torso.Position, myRoot.Position) then
-                                -- Can see locked target, keep aiming
                                 AimingPaused = false
                                 PauseTimer = 0
                                 aimAtTarget(LockedTarget)
                             else
-                                -- Can't see locked target, start timer to switch
                                 AimingPaused = true
                                 PauseTimer = PauseTimer + deltaTime
                                 
                                 if PauseTimer >= PauseCooldown then
-                                    -- Time to switch to new target
                                     local visibleTargets = getVisibleTargets()
                                     if #visibleTargets > 0 then
-                                        -- Find closest visible target
                                         local newTarget = nil
                                         local closestDistance = math.huge
                                         local myPosition = myRoot.Position
@@ -459,22 +463,16 @@ RunService.RenderStepped:Connect(function(deltaTime)
                                             AimingPaused = false
                                             PauseTimer = 0
                                             aimAtTarget(newTarget)
-                                        else
-                                            AimingPaused = true
                                         end
-                                    else
-                                        AimingPaused = true
                                     end
                                 end
                             end
                         else
-                            -- Wall check off, keep aiming at locked target
                             aimAtTarget(LockedTarget)
                             AimingPaused = false
                             PauseTimer = 0
                         end
                     else
-                        -- Lost target body parts, break lock
                         breakLock()
                         local newTarget = getNearestTarget()
                         if newTarget then
@@ -485,8 +483,7 @@ RunService.RenderStepped:Connect(function(deltaTime)
                     end
                 end
             else
-                -- No target locked or lock disabled
-                local target, distance, hasValidTarget = getNearestTarget()
+                local target = getNearestTarget()
                 
                 if target then
                     AimingPaused = false
@@ -516,7 +513,7 @@ RunService.RenderStepped:Connect(function(deltaTime)
     end
     
     NPCTimer = NPCTimer + deltaTime
-    if NPCTimer >= 1 then
+    if NPCTimer >= NPCRefreshRate then
         updateNPCList()
         NPCTimer = 0
     end
@@ -919,7 +916,6 @@ WallCheckButton.MouseButton1Click:Connect(function()
     PauseTimer = 0
     
     if WallCheckEnabled and LockTargetEnabled and LockedTarget then
-        -- Check if we can see the locked target with wall check on
         local myCharacter = LocalPlayer.Character
         if myCharacter then
             local myRoot = myCharacter:FindFirstChild("HumanoidRootPart")
