@@ -14,7 +14,7 @@ local LockTargetEnabled = false
 local ESPObjects = {}
 local NPCs = {}
 local NPCTimer = 0
-local NPCRefreshRate = 0.5
+local NPCRefreshRate = 0.3  -- Even faster NPC detection
 local SettingsOpen = true
 local LockedTarget = nil
 local LockedTargetIdentifier = nil
@@ -29,17 +29,19 @@ local function isCharacterAlive(char)
 end
 
 local function isEnemyPlayer(player)
-    if not TeamCheckEnabled then return false end
+    if not TeamCheckEnabled then return true end  -- FIX: Team check OFF = all are enemies
     
     local myTeam = LocalPlayer:FindFirstChild("Team")
     local targetTeam = player:FindFirstChild("Team")
     
+    -- If no teams in game, treat as ENEMY (since team check is ON)
     if not myTeam or not targetTeam then
-        return false
+        return true  -- FIX: Changed from false to true
     end
     
+    -- If either team value is nil, treat as ENEMY
     if not myTeam.Value or not targetTeam.Value then
-        return false
+        return true  -- FIX: Changed from false to true
     end
     
     return myTeam.Value ~= targetTeam.Value
@@ -61,9 +63,10 @@ local function getAllHumanoids()
     end
     
     if IncludeNPCs then
-        for npcName, npcData in pairs(NPCs) do
+        -- FIX: Iterate through all NPCs in the table
+        for npcKey, npcData in pairs(NPCs) do
             if npcData.model and isCharacterAlive(npcData.model) and npcData.humanoid then
-                table.insert(humanoids, {humanoid = npcData.humanoid, model = npcData.model, isPlayer = false, name = npcName, isEnemy = true})
+                table.insert(humanoids, {humanoid = npcData.humanoid, model = npcData.model, isPlayer = false, name = npcData.name, isEnemy = true})
             end
         end
     end
@@ -75,27 +78,29 @@ local function findNPCs()
     local foundNPCs = {}
     local playerCharacters = {}
     
+    -- First, collect all player characters
     for _, player in ipairs(Players:GetPlayers()) do
         if player.Character then
             playerCharacters[player.Character] = true
         end
     end
     
+    -- Check ALL models with Humanoids (including newly spawned ones)
     for _, model in ipairs(Workspace:GetDescendants()) do
         if model:IsA("Model") then
             local humanoid = model:FindFirstChild("Humanoid")
             if humanoid and isCharacterAlive(model) then
+                -- Skip if it's a player character
                 if not playerCharacters[model] then
                     local humanoidRootPart = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head")
                     if humanoidRootPart then
+                        -- Use model reference as key to avoid duplicates
                         local key = tostring(model)
-                        if not foundNPCs[key] then
-                            foundNPCs[key] = {
-                                humanoid = humanoid,
-                                model = model,
-                                name = model.Name
-                            }
-                        end
+                        foundNPCs[key] = {
+                            humanoid = humanoid,
+                            model = model,
+                            name = model.Name
+                        }
                     end
                 end
             end
@@ -106,6 +111,7 @@ local function findNPCs()
 end
 
 local function updateNPCList()
+    -- FIX: Replace entire NPCs table with new findings
     NPCs = findNPCs()
 end
 
@@ -140,7 +146,7 @@ local function getTargetIdentifier(targetData)
     if targetData.isPlayer then
         return "Player_" .. targetData.player.Name
     else
-        return "NPC_" .. targetData.name
+        return "NPC_" .. (targetData.name or "Unknown")
     end
 end
 
@@ -149,24 +155,33 @@ local function getESPColor(targetData)
         local myTeam = LocalPlayer:FindFirstChild("Team")
         local targetTeam = targetData.player:FindFirstChild("Team")
         
-        if not TeamCheckEnabled or not myTeam or not targetTeam then
-            return Color3.fromRGB(50, 255, 50)
+        -- If team check is OFF, show red for all players
+        if not TeamCheckEnabled then
+            return Color3.fromRGB(255, 50, 50)  -- Red for all when team check off
         end
         
+        -- If no teams in game, show red (enemy)
+        if not myTeam or not targetTeam then
+            return Color3.fromRGB(255, 50, 50)  -- Red when no teams
+        end
+        
+        -- Get team values
         local myTeamValue = myTeam.Value
         local targetTeamValue = targetTeam.Value
         
+        -- If team values don't exist, show red (enemy)
         if not myTeamValue or not targetTeamValue then
-            return Color3.fromRGB(50, 255, 50)
+            return Color3.fromRGB(255, 50, 50)  -- Red when no team values
         end
         
+        -- Same team = green, different team = red
         if myTeamValue == targetTeamValue then
-            return Color3.fromRGB(50, 255, 50)
+            return Color3.fromRGB(50, 255, 50)  -- Green
         else
-            return Color3.fromRGB(255, 50, 50)
+            return Color3.fromRGB(255, 50, 50)   -- Red
         end
     else
-        return Color3.fromRGB(255, 165, 0)
+        return Color3.fromRGB(255, 165, 0)  -- Orange for NPCs
     end
 end
 
@@ -186,7 +201,7 @@ local function createESP(targetData)
     highlight.OutlineTransparency = 0
     highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
     highlight.Parent = espHolder
-    
+
     local billboardGui = Instance.new("BillboardGui")
     billboardGui.Name = "InfoGui"
     billboardGui.Size = UDim2.new(0, 200, 0, 100)
@@ -194,7 +209,7 @@ local function createESP(targetData)
     billboardGui.AlwaysOnTop = true
     billboardGui.StudsOffset = Vector3.new(0, 6, 0)
     billboardGui.Parent = espHolder
-
+    
     local nameLabel = Instance.new("TextLabel")
     nameLabel.Name = "NameLabel"
     nameLabel.Size = UDim2.new(1, 0, 0.5, 0)
@@ -291,7 +306,11 @@ local function updateESP(identifier, espData, targetData)
                 else
                     teamInfo = " (Enemy)"
                 end
+            else
+                teamInfo = " (Enemy)"
             end
+        else
+            teamInfo = " (Enemy)"
         end
     else
         teamInfo = " (NPC)"
@@ -339,22 +358,21 @@ local function getNearestTarget()
     local allHumanoids = getAllHumanoids()
     
     for _, targetData in ipairs(allHumanoids) do
-        if not targetData.isEnemy then
-            continue
-        end
-        
-        local torso = targetData.model:FindFirstChild("Torso") or targetData.model:FindFirstChild("UpperTorso") or targetData.model:FindFirstChild("HumanoidRootPart")
-        if torso then
-            if WallCheckEnabled then
-                if not canSeeTarget(torso.Position, myPosition) then
-                    continue
+        -- FIX: Only target enemies (NPCs are always enemies)
+        if targetData.isEnemy then
+            local torso = targetData.model:FindFirstChild("Torso") or targetData.model:FindFirstChild("UpperTorso") or targetData.model:FindFirstChild("HumanoidRootPart")
+            if torso then
+                if WallCheckEnabled then
+                    if not canSeeTarget(torso.Position, myPosition) then
+                        continue
+                    end
                 end
-            end
-            
-            local distance = (torso.Position - myPosition).Magnitude
-            if distance < nearestDistance then
-                nearestDistance = distance
-                nearestTarget = targetData
+                
+                local distance = (torso.Position - myPosition).Magnitude
+                if distance < nearestDistance then
+                    nearestDistance = distance
+                    nearestTarget = targetData
+                end
             end
         end
     end
@@ -374,18 +392,16 @@ local function getVisibleTargets()
     local allHumanoids = getAllHumanoids()
     
     for _, targetData in ipairs(allHumanoids) do
-        if not targetData.isEnemy then
-            continue
-        end
-        
-        local torso = targetData.model:FindFirstChild("Torso") or targetData.model:FindFirstChild("UpperTorso") or targetData.model:FindFirstChild("HumanoidRootPart")
-        if torso then
-            if WallCheckEnabled then
-                if canSeeTarget(torso.Position, myPosition) then
+        if targetData.isEnemy then
+            local torso = targetData.model:FindFirstChild("Torso") or targetData.model:FindFirstChild("UpperTorso") or targetData.model:FindFirstChild("HumanoidRootPart")
+            if torso then
+                if WallCheckEnabled then
+                    if canSeeTarget(torso.Position, myPosition) then
+                        table.insert(visibleTargets, targetData)
+                    end
+                else
                     table.insert(visibleTargets, targetData)
                 end
-            else
-                table.insert(visibleTargets, targetData)
             end
         end
     end
@@ -512,9 +528,10 @@ RunService.RenderStepped:Connect(function(deltaTime)
         PauseTimer = 0
     end
     
+    -- FIX: Faster NPC refresh (0.3 seconds)
     NPCTimer = NPCTimer + deltaTime
     if NPCTimer >= NPCRefreshRate then
-        updateNPCList()
+        updateNPCList()  -- This now properly replaces old NPCs with new ones
         NPCTimer = 0
     end
     
