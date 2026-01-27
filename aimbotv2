@@ -1,9 +1,11 @@
 -- Mobile AimBot + ESP for Roblox - Works on Players and NPCs
+-- VERSION: FIXED NPC DETECTION BUG (Same models issue)
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
+
 local AimBotEnabled = false
 local ESPEnabled = false
 local IsAlive = true
@@ -22,11 +24,12 @@ local AimingPaused = false
 local PauseTimer = 0
 local PauseCooldown = 1.0
 
+-- CRITICAL FIX: Better character alive check
 local function isCharacterAlive(char)
-    if not char then return false end
+    if not char or not char:IsA("Model") then return false end
     local humanoid = char:FindFirstChild("Humanoid")
-    if not humanoid then return false end
-    return humanoid.Health > 0
+    if not humanoid or not humanoid:IsA("Humanoid") then return false end
+    return humanoid.Health > 0 and humanoid.Health <= humanoid.MaxHealth
 end
 
 local function isEnemyPlayer(player)
@@ -46,25 +49,56 @@ local function isEnemyPlayer(player)
     return myTeam.Value ~= targetTeam.Value
 end
 
+-- CRITICAL FIX: Improved getAllHumanoids
 local function getAllHumanoids()
     local humanoids = {}
+    local playerCharacters = {}
     
+    -- First collect all player characters
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player.Character then
+            playerCharacters[player.Character] = true
+        end
+    end
+    
+    -- Get players
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer then
-            if player.Character and isCharacterAlive(player.Character) then
-                local humanoid = player.Character:FindFirstChild("Humanoid")
+            local char = player.Character
+            if char and isCharacterAlive(char) then
+                local humanoid = char:FindFirstChild("Humanoid")
                 if humanoid then
                     local isEnemy = isEnemyPlayer(player)
-                    table.insert(humanoids, {humanoid = humanoid, model = player.Character, isPlayer = true, player = player, isEnemy = isEnemy})
+                    humanoids[#humanoids + 1] = {
+                        humanoid = humanoid,
+                        model = char,
+                        isPlayer = true,
+                        player = player,
+                        isEnemy = isEnemy
+                    }
                 end
             end
         end
     end
     
+    -- Get NPCs
     if IncludeNPCs then
+        -- CRITICAL FIX: Properly iterate through NPCs table
         for npcKey, npcData in pairs(NPCs) do
-            if npcData.model and npcData.humanoid and isCharacterAlive(npcData.model) then
-                table.insert(humanoids, {humanoid = npcData.humanoid, model = npcData.model, isPlayer = false, name = npcData.name, isEnemy = true})
+            if npcData and npcData.model and npcData.humanoid then
+                -- Check if model still exists and is alive
+                if npcData.model:IsDescendantOf(game) and isCharacterAlive(npcData.model) then
+                    -- Check if it's not a player character (double-check)
+                    if not playerCharacters[npcData.model] then
+                        humanoids[#humanoids + 1] = {
+                            humanoid = npcData.humanoid,
+                            model = npcData.model,
+                            isPlayer = false,
+                            name = npcData.name or npcData.model.Name,
+                            isEnemy = true
+                        }
+                    end
+                end
             end
         end
     end
@@ -72,35 +106,71 @@ local function getAllHumanoids()
     return humanoids
 end
 
+-- CRITICAL FIX: Completely rewritten NPC finder
 local function findNPCs()
     local foundNPCs = {}
     local playerCharacters = {}
+    local checkedModels = {}
     
+    -- Get all player characters first
     for _, player in ipairs(Players:GetPlayers()) do
         if player.Character then
             playerCharacters[player.Character] = true
         end
     end
     
-    for _, model in ipairs(Workspace:GetDescendants()) do
+    -- CRITICAL: Check Workspace AND all its descendants
+    local function checkModel(model)
+        if checkedModels[model] then return end
+        checkedModels[model] = true
+        
         if model:IsA("Model") then
-            local humanoid = model:FindFirstChild("Humanoid")
-            if humanoid then
-                local alive = false
-                if humanoid:IsA("Humanoid") then
-                    alive = humanoid.Health > 0
+            -- Skip player characters
+            if playerCharacters[model] then return end
+            
+            local humanoid = model:FindFirstChildOfClass("Humanoid")
+            if not humanoid then
+                -- Also check for "Humanoid" by name (some games use different class names)
+                humanoid = model:FindFirstChild("Humanoid")
+            end
+            
+            if humanoid and humanoid:IsA("Humanoid") then
+                -- Check if alive
+                if humanoid.Health > 0 and humanoid.Health <= humanoid.MaxHealth then
+                    -- CRITICAL FIX: Use Instance as key, not tostring()
+                    foundNPCs[model] = {
+                        humanoid = humanoid,
+                        model = model,
+                        name = model.Name
+                    }
                 end
-                
-                if alive then
-                    if not playerCharacters[model] then
-                        local key = tostring(model)
-                        foundNPCs[key] = {
-                            humanoid = humanoid,
-                            model = model,
-                            name = model.Name
-                        }
-                    end
-                end
+            end
+        end
+    end
+    
+    -- Check all models in Workspace
+    for _, item in ipairs(Workspace:GetChildren()) do
+        checkModel(item)
+        
+        -- Also check all descendants
+        for _, descendant in ipairs(item:GetDescendants()) do
+            checkModel(descendant)
+        end
+    end
+    
+    -- Check common NPC folders
+    local npcFolders = {
+        Workspace:FindFirstChild("NPCs"),
+        Workspace:FindFirstChild("Enemies"),
+        Workspace:FindFirstChild("Monsters"),
+        Workspace:FindFirstChild("Zombies"),
+        Workspace:FindFirstChild("Bots")
+    }
+    
+    for _, folder in ipairs(npcFolders) do
+        if folder then
+            for _, item in ipairs(folder:GetDescendants()) do
+                checkModel(item)
             end
         end
     end
@@ -109,9 +179,21 @@ local function findNPCs()
 end
 
 local function updateNPCList()
-    NPCs = findNPCs()
+    -- CRITICAL FIX: Clear old NPCs table first
+    for key in pairs(NPCs) do
+        NPCs[key] = nil
+    end
+    
+    -- Get new NPCs
+    local newNPCs = findNPCs()
+    
+    -- Copy to NPCs table
+    for model, data in pairs(newNPCs) do
+        NPCs[model] = data
+    end
 end
 
+-- Rest of the functions remain the same as before...
 local function canSeeTarget(targetPos, myPos)
     if not WallCheckEnabled then return true end
     
@@ -143,7 +225,7 @@ local function getTargetIdentifier(targetData)
     if targetData.isPlayer then
         return "Player_" .. targetData.player.Name
     else
-        return "NPC_" .. (targetData.name or "Unknown")
+        return "NPC_" .. (targetData.name or targetData.model.Name or "Unknown")
     end
 end
 
@@ -234,12 +316,13 @@ local function createESP(targetData)
     espData.isPlayer = targetData.isPlayer
     espData.player = targetData.player
     espData.name = targetData.name
+    espData.model = targetData.model
     
     ESPObjects[identifier] = espData
 end
 
 local function updateESP(identifier, espData, targetData)
-    if not targetData or not targetData.model then
+    if not targetData or not targetData.model or not targetData.model.Parent then
         if espData.holder then
             espData.holder.Parent = nil
         end
@@ -247,7 +330,7 @@ local function updateESP(identifier, espData, targetData)
     end
     
     local humanoid = targetData.model:FindFirstChild("Humanoid")
-    if not humanoid or humanoid.Health <= 0 then
+    if not humanoid or not humanoid:IsA("Humanoid") or humanoid.Health <= 0 then
         if espData.holder then
             espData.holder.Parent = nil
         end
@@ -276,7 +359,7 @@ local function updateESP(identifier, espData, targetData)
         end
     end
     
-    local displayName = targetData.isPlayer and targetData.player.Name or (targetData.name or "NPC")
+    local displayName = targetData.isPlayer and targetData.player.Name or (targetData.name or targetData.model.Name or "NPC")
     espData.nameLabel.Text = displayName
     espData.nameLabel.TextColor3 = espColor
     
