@@ -742,6 +742,7 @@ TeamCheckButton.Parent = SettingsPanel
 local TeamCheckCorner = Instance.new("UICorner")
 TeamCheckCorner.CornerRadius = UDim.new(0, 6)
 TeamCheckCorner.Parent = TeamCheckButton
+
 local NPCButton = Instance.new("TextButton")
 NPCButton.Name = "NPCButton"
 NPCButton.Size = UDim2.new(0.85, 0, 0, 32)
@@ -755,6 +756,7 @@ NPCButton.Parent = SettingsPanel
 local NPCButtonCorner = Instance.new("UICorner")
 NPCButtonCorner.CornerRadius = UDim.new(0, 6)
 NPCButtonCorner.Parent = NPCButton
+
 local WallCheckButton = Instance.new("TextButton")
 WallCheckButton.Name = "WallCheckButton"
 WallCheckButton.Size = UDim2.new(0.85, 0, 0, 32)
@@ -768,6 +770,7 @@ WallCheckButton.Parent = SettingsPanel
 local WallCheckCorner = Instance.new("UICorner")
 WallCheckCorner.CornerRadius = UDim.new(0, 6)
 WallCheckCorner.Parent = WallCheckButton
+
 local LockTargetButton = Instance.new("TextButton")
 LockTargetButton.Name = "LockTargetButton"
 LockTargetButton.Size = UDim2.new(0.85, 0, 0, 32)
@@ -781,6 +784,7 @@ LockTargetButton.Parent = SettingsPanel
 local LockTargetCorner = Instance.new("UICorner")
 LockTargetCorner.CornerRadius = UDim.new(0, 6)
 LockTargetCorner.Parent = LockTargetButton
+
 local ESPButton = Instance.new("TextButton")
 ESPButton.Name = "ESPButton"
 ESPButton.Size = UDim2.new(0.85, 0, 0, 32)
@@ -794,6 +798,7 @@ ESPButton.Parent = SettingsPanel
 local ESPCorner = Instance.new("UICorner")
 ESPCorner.CornerRadius = UDim.new(0, 6)
 ESPCorner.Parent = ESPButton
+
 local AutoWalkButton = Instance.new("TextButton")
 AutoWalkButton.Name = "AutoWalkButton"
 AutoWalkButton.Size = UDim2.new(0.85, 0, 0, 32)
@@ -807,6 +812,7 @@ AutoWalkButton.Parent = SettingsPanel
 local AutoWalkCorner = Instance.new("UICorner")
 AutoWalkCorner.CornerRadius = UDim.new(0, 6)
 AutoWalkCorner.Parent = AutoWalkButton
+
 local CloseButton = Instance.new("TextButton")
 CloseButton.Name = "CloseButton"
 CloseButton.Size = UDim2.new(0.85, 0, 0, 35)
@@ -841,12 +847,17 @@ AimbotButton.MouseButton1Click:Connect(function()
         updateSettingsPanel()
     end
 end)
-ResetButton.MouseButton1Click:Connect(function() suicide() end)
+
+ResetButton.MouseButton1Click:Connect(function()
+    suicide()
+end)
+
 SettingsButton.MouseButton1Click:Connect(function()
     SettingsOpen = not SettingsOpen
     SettingsPanel.Visible = SettingsOpen
     updateSettingsPanel()
 end)
+
 TeamCheckButton.MouseButton1Click:Connect(function()
     TeamCheckEnabled = not TeamCheckEnabled
     AimingPaused = false
@@ -865,6 +876,7 @@ TeamCheckButton.MouseButton1Click:Connect(function()
     end
     updateSettingsPanel()
 end)
+
 NPCButton.MouseButton1Click:Connect(function()
     IncludeNPCs = not IncludeNPCs
     AimingPaused = false
@@ -884,6 +896,7 @@ NPCButton.MouseButton1Click:Connect(function()
     end
     updateSettingsPanel()
 end)
+
 WallCheckButton.MouseButton1Click:Connect(function()
     WallCheckEnabled = not WallCheckEnabled
     AimingPaused = false
@@ -891,6 +904,7 @@ WallCheckButton.MouseButton1Click:Connect(function()
     updateSettingsPanel()
     updateAimbotButton()
 end)
+
 LockTargetButton.MouseButton1Click:Connect(function()
     LockTargetEnabled = not LockTargetEnabled
     if not LockTargetEnabled then
@@ -904,20 +918,24 @@ LockTargetButton.MouseButton1Click:Connect(function()
     end
     updateSettingsPanel()
 end)
+
 ESPButton.MouseButton1Click:Connect(function()
     ESPEnabled = not ESPEnabled
     if not ESPEnabled then clearAllESP() end
     updateSettingsPanel()
 end)
+
 AutoWalkButton.MouseButton1Click:Connect(function()
     AutoWalkEnabled = not AutoWalkEnabled
     if not AutoWalkEnabled then StopWalking() end
     updateSettingsPanel()
 end)
+
 CloseButton.MouseButton1Click:Connect(function()
     SettingsOpen = false
     SettingsPanel.Visible = false
 end)
+
 RunService.RenderStepped:Connect(function(deltaTime)
     updateAutoWalk(deltaTime)
     if AimBotEnabled and IsAlive then
@@ -1057,7 +1075,11 @@ RunService.RenderStepped:Connect(function(deltaTime)
         end
     end
 end)
-if LocalPlayer.Character then setupCharacter(LocalPlayer.Character) end
+
+if LocalPlayer.Character then
+    setupCharacter(LocalPlayer.Character)
+end
+
 LocalPlayer.CharacterAdded:Connect(function(character)
     IsAlive = true
     AimBotEnabled = SavedAimBotState
@@ -1074,6 +1096,7 @@ LocalPlayer.CharacterAdded:Connect(function(character)
     end
     updateAimbotButton()
 end)
+
 updateNPCList()
 updateAimbotButton()
 updateSettingsPanel()
